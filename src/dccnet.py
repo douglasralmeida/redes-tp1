@@ -41,8 +41,7 @@ def args_processar(conexao):
   if conexao['modoservidor']:
     conexao['porta'] = int(sys.argv[2])
   else:
-    temp = sys.argv[2]
-    temp = temp.split(':')
+    temp = sys.argv[2].split(':')
     conexao['ip'] = temp[0]
     conexao['porta'] = int(temp[1])
   conexao['entrada'] = sys.argv[3]
@@ -69,7 +68,7 @@ def dados_rechear(dados, bytesflag, byteescape):
   return y
 
 # Codifica um quadro e base16
-def quadro_codificar(quadro)
+def quadro_codificar(quadro):
   return base64.b16encode(quadro)
   
 # Gera um quadro conforme especificação do TP
@@ -95,13 +94,11 @@ def filaquadros_gerar(lista):
 
 # Corpo do programa
 # =================  
-if len(sys.argv) < 5:
-  exit
+if len(sys.argv) > 5:  
+  args_processar(conexao)
+  dados = dados_obter(conexao['entrada'])
+  dadosrecheados = dados_rechear(dados, [BYTE_FINAL], BYTE_ESCAPE)
+  pedacos = dados_partir(dadosrecheados, TAMANHO_QUADRO)
+  fila = filaquadros_gerar(pedacos)
 
-args_processar(conexao)
-dados = dados_obter(conexao['entrada'])
-dadosrecheados = dados_rechear(dados, [BYTE_FINAL], BYTE_ESCAPE)
-pedacos = dados_partir(dadosrecheados, TAMANHO_QUADRO)
-fila = filaquadros_gerar(pedacos)
-
-print(fila)
+  print(fila)
