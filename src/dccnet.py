@@ -3,8 +3,9 @@
 
 # TP1 de Redes
 
-import math
 import base64
+import math
+import socket
 import sys
 
 # CONSTANTES DO PROGRAMA
@@ -19,7 +20,7 @@ BYTE_RECEBE    = bytearray([127]) # 7f
 
 # VARIÁVEIS DO PROGRAMA
 # =====================
-conexao = {'ip' : '', 'modoservidor': False, 'porta': 0, 'entrada': '', 'saida': ''}
+parametros = {'ip' : '', 'modoservidor': False, 'porta': 0, 'cliente': '', 'entrada': '', 'saida': ''}
 lista_quadros = []
 
 # FUNCOES DO PROGRAMA
@@ -30,16 +31,16 @@ lista_quadros = []
 # arg2 = porta ou ip:porta
 # arg3 = arquivo de entrada
 # arg4 = arquivo de saída
-def args_processar(conexao):
-  conexao['modoservidor'] = True if sys.argv[1] == '-s' else False
-  if conexao['modoservidor']:
-    conexao['porta'] = int(sys.argv[2])
+def args_processar(parametros):
+  parametros['modoservidor'] = True if sys.argv[1] == '-s' else False
+  if parametros['modoservidor']:
+    parametros['porta'] = int(sys.argv[2])
   else:
     temp = sys.argv[2].split(':')
-    conexao['ip'] = temp[0]
-    conexao['porta'] = int(temp[1])
-  conexao['entrada'] = sys.argv[3]
-  conexao['saida'] = sys.argv[4]
+    parametros['ip'] = temp[0]
+    parametros['porta'] = int(temp[1])
+  parametros['entrada'] = sys.argv[3]
+  parametros['saida'] = sys.argv[4]
 
 # Checa a integridade dos dadosGera os bytes para checksum de 16 bits
 def chcksum_checar(valor):
@@ -65,6 +66,43 @@ def chcksum_gerar(valor):
   byte2 = complemento % 0x100
   
   return (bytearray([byte1, byte2]))
+
+# Efetua uma conexão ativa para IP informado
+def conexaoativa_conectar(conexao, param):
+  conexao.connect((param['ip'], param['porta']))
+
+def conexaoativa_manipular(tcp):
+  tcp.send(bytearray([0,1,2,3,4]))
+  try:
+    while True:
+      r = tcp.recv(1)
+      if not r:
+        break
+      if len(r) == 0:
+        break
+      print(r)
+  except:
+    exit()
+
+# Espera passivamente por uma conexão
+def conexaopassiva_conectar(tcp, param):
+  # Espera por um pedido de conexão externo
+  tcp.bind(('', param['porta']))
+  tcp.listen(1)
+  
+  # Aceita uma conexao externa
+  return tcp.accept()
+
+# Recebe, processa e envia dados pela conexao  
+def conexaopassiva_manipular(conexao):
+  try:
+    while True:
+      r = conexao.recv(1)
+      s = bytearray(1)
+      s[0] = r[0] + 1
+      conexao.send(s)
+  except:
+    exit()
 
 # Abre um arquivo para leitura e o
 # carrega na memória
@@ -127,13 +165,36 @@ def filaquadros_gerar(lista):
     i = i + 1
   return quadros
 
+# Configura uma conexão via TCP/IP
+def tcp_obter():
+  # Cria um soquete para comunicação externa
+  tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+
+  # Para evitar a exceção "address already in use",
+  # desligar esse comportamento com uma opção da API de soquetes:
+  tcp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    
+  return tcp
+  
+# Desliga e fecha uma conexão TCP/IP
+def tcp_encerrar(tcp):
+  tcp.shutdown(socket.SHUT_RDWR)
+  tcp.close()
+
 # CORPO DO PROGRAMA
 # =================  
 if len(sys.argv) > 4:  
-  args_processar(conexao)
-  dados = dados_obter(conexao['entrada'])
+  args_processar(parametros)
+  dados = dados_obter(parametros['entrada'])
   dadosrecheados = dados_rechear(dados, [BYTE_FINAL], BYTE_ESCAPE)
   pedacos = dados_partir(dadosrecheados, TAMANHO_QUADRO)
   fila = filaquadros_gerar(pedacos)
-
-  print(fila)
+  tcp = tcp_obter()
+  
+  if parametros['modoservidor']:
+    conexao, parametros['cliente'] = conexaopassiva_conectar(tcp, parametros)
+    conexaopassiva_manipular(conexao)
+  else:
+    conexaoativa_conectar(tcp, parametros)
+    conexaoativa_manipular(tcp)
+  tcp_encerrar(tcp)
