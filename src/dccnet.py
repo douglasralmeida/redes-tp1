@@ -1,35 +1,29 @@
+# -*- coding: utf-8 -*-
+#! /usr/bin/python3.6
+
 # TP1 de Redes
 
+import math
 import base64
 import sys
 
-# Constantes do programa
+# CONSTANTES DO PROGRAMA
 # ======================
 TAMANHO_QUADRO = 512
-BYTE_ESCAPE    = b'1b'
-BYTE_INICIO    = b'cc'
-BYTE_FINAL     = b'cd'
-BYTE_CONFIRMA  = b'80'
-BYTE_RECEBE    = b'7f'
+TAMANHO_JANELA = 2
+BYTE_ESCAPE    = bytearray([27])  # 1b
+BYTE_INICIO    = bytearray([204]) # cc
+BYTE_FINAL     = bytearray([205]) # cd
+BYTE_CONFIRMA  = bytearray([128]) # 80
+BYTE_RECEBE    = bytearray([127]) # 7f
 
-# Variaveis do programa
+# VARIÁVEIS DO PROGRAMA
 # =====================
 conexao = {'ip' : '', 'modoservidor': False, 'porta': 0, 'entrada': '', 'saida': ''}
 lista_quadros = []
 
-# Funcoes do programa
+# FUNCOES DO PROGRAMA
 # ===================
-
-# Gera o byte checksum
-def gerar_chcksum(valor):
-  lista = partir_dados(valor, 2)
-  b = bytearray(str)
-  soma = b'0'
-  print(lista)
-  for item in lista:
-    soma += item
-  print(soma)
-  return (soma & 0xFF)
 
 # Lê os argumentos do programa
 # arg1 = -s ou -c
@@ -47,15 +41,40 @@ def args_processar(conexao):
   conexao['entrada'] = sys.argv[3]
   conexao['saida'] = sys.argv[4]
 
+# Checa a integridade dos dadosGera os bytes para checksum de 16 bits
+def chcksum_checar(valor):
+  soma = 0
+  for x in valor:
+    soma = soma + x
+  for x in range(0, 1):
+    vaium = math.floor(soma / 0x100)
+    soma = soma % 0x100 + vaium
+    
+  return (soma == 0xFF)
+
+# Gera os bytes para checksum de 16 bits
+def chcksum_gerar(valor):
+  soma = 0
+  for x in valor:
+    soma = soma + x
+  for x in range(0, 1):
+    vaium = math.floor(soma / 0x10000)
+    soma = soma % 0x10000 + vaium
+  complemento = ~soma & 0xFFFF
+  byte1 = math.floor(complemento / 0x100)
+  byte2 = complemento % 0x100
+  
+  return (bytearray([byte1, byte2]))
+
 # Abre um arquivo para leitura e o
 # carrega na memória
 def dados_obter(nomearquivo):
   arquivo = open(nomearquivo, "rb")
-  dados = arquivo.read() 
+  dados = bytearray(arquivo.read())
 
   return dados
 
-# Partir dados em pedaços
+# Particionar dados em pedaços
 def dados_partir(dados, tamanho):
   return [dados[i:i+tamanho] for i in range(0, len(dados), tamanho)]
 
@@ -73,28 +92,44 @@ def quadro_codificar(quadro):
   
 # Gera um quadro conforme especificação do TP
 def quadro_gerar(dados, quadroid):
-  quadro = BYTE_INICIO    # sentinela Inicio do Quadro
-  quadro += quadroid      # ID do quadro
-  quadro += BYTE_RECEBE   # Flag de recepcao
-  quadro += b'00'         # Espaço reservado para o chcksum
-  quadro += dados         # Dados do quadro
-  quadro += BYTE_FINAL    # sentinela Fim do Quadro
+  espacovazio = bytearray([0,0])
+
+  quadro = BYTE_INICIO       # sentinela Inicio do Quadro
+  quadro.extend(quadroid)    # ID do quadro
+  quadro.extend(BYTE_RECEBE) # Flag de recepcao
+  quadro.extend(espacovazio) # Espaço reservado para o checksum
+  quadro.extend(dados)       # Dados do quadro
+  quadro.extend(BYTE_FINAL)  # sentinela Fim do Quadro
+  
+  # calcula o checksum
+  checksum = chcksum_gerar(quadro)
+  quadro[3] = checksum[0]
+  quadro[4] = checksum[1]
   
   return quadro
-  
+
+# Gera os IDs disponíveis para identificar
+# os quadros da fila
+def filaquadros_gerarids(quantidade):
+  lista = []
+  for i in range(0, quantidade):
+    lista.append(bytearray([i]))
+    
+  return lista
+    
 # Gera a fila de quadros para transmitir
 def filaquadros_gerar(lista):
-  ids = [b'0', b'1']
   i = 0
-  quadros = list()
+  ids = filaquadros_gerarids(TAMANHO_JANELA)
+  quadros = []
   for item in lista:
-    quadros.append(quadro_gerar(item, ids[i % 2]))
-    i = i+1
+    quadros.append(quadro_gerar(item, ids[i % TAMANHO_JANELA]))
+    i = i + 1
   return quadros
 
-# Corpo do programa
+# CORPO DO PROGRAMA
 # =================  
-if len(sys.argv) > 5:  
+if len(sys.argv) > 4:  
   args_processar(conexao)
   dados = dados_obter(conexao['entrada'])
   dadosrecheados = dados_rechear(dados, [BYTE_FINAL], BYTE_ESCAPE)
