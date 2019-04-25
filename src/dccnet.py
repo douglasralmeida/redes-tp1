@@ -11,14 +11,14 @@ import sys
 # CONSTANTES DO PROGRAMA
 # ======================
 TAMANHO_SECAODADOS = 512
-TAMANHO_JANELA = 2
-BYTE_ESCAPE    = bytearray([27])  # 1b
-BYTE_INICIO    = bytearray([204]) # cc
-BYTE_FINAL     = bytearray([205]) # cd
-BYTE_CONFIRMA  = bytearray([128]) # 80
-BYTE_RECEBE    = bytearray([127]) # 7f
-
-BYTES_FLAGS = [BYTE_FINAL]
+TAMANHO_JANELA     = 2
+BYTE_ESCAPE        = bytearray([27])  # 1b
+BYTE_INICIO        = bytearray([204]) # cc
+BYTE_FINAL         = bytearray([205]) # cd
+BYTE_CONFIRMA      = bytearray([128]) # 80
+BYTE_RECEBE        = bytearray([127]) # 7f
+BYTES_FLAGS        = [BYTE_FINAL]
+EXIBIR_LOG         = True
 
 # VARIÁVEIS DO PROGRAMA
 # =====================
@@ -26,6 +26,10 @@ parametros = {'ip' : '', 'modoservidor': False, 'porta': 0, 'cliente': '', 'entr
 
 # FUNCOES DO PROGRAMA
 # ===================
+
+def log(msg):
+  if EXIBIR_LOG:
+    print(msg) 
 
 # Lê os argumentos do programa
 # arg1 = -s ou -c
@@ -98,10 +102,8 @@ def dados_obter(nomearquivo):
 
   return dados
   
-def dados_salvar(dados, nomearquivo):
-  arquivo = open(nomearquivo, "w+b")
+def dados_salvar(dados, arquivo):
   arquivo.write(dados)
-  arquivo.close()
 
 # Particionar dados em pedaços
 def dados_partir(dados, tamanho):
@@ -180,17 +182,19 @@ def conexao_enviar(tcp, quadro):
   dados = base16_codificar(quadro)
   tcp.sendall(dados)
   
-def conexao_receber(tcp):
+def conexao_receber(conexao):
   while True:
     # recebe dois bytes
     dados = bytearray()
     tamanho = 1
     try:
-      tcp.settimeout(1)
-      dados.extend(tcp.recv(2))
+      conexao.settimeout(1.0)
+      dados.extend(conexao.recv(2))
     except socket.timeout:
       # demorou mais de um segundo
+      conexao.settimeout(None)
       return 1, None
+    conexao.settimeout(None)
   
     # se não recebeu nada então a conexão
     # do outro enlace foi desligada
@@ -205,11 +209,13 @@ def conexao_receber(tcp):
       # é o inicio do quadro, então o recebe
       while True:
         try:
-          tcp.settimeout(1)
-          dados.extend(tcp.recv(2))
+          conexao.settimeout(1.0)
+          dados.extend(conexao.recv(2))
         except socket.timeout:
           # demorou mais de um segundo
+          conexao.settimeout(None)
           return 1, None
+        conexao.settimeout(None)
         tamanho = tamanho + 1
         # recebe até o seu final e o retorna
         if byte_efinal(dados):
@@ -223,7 +229,9 @@ def conexao_confirmar(conexao, id):
 
 
 def conexao_enviarquadro(conexao, quadro, info):
+  log('Enviando quadro...')
   conexao_enviar(conexao, quadro)
+  log('Enviado.')
   info['envia_id'] = quadro_obterid(quadro)
   info['aguarda_resposta'] = True
   info['timeout'] = False
@@ -231,34 +239,41 @@ def conexao_enviarquadro(conexao, quadro, info):
 def conexao_obterquadro(conexao, info):
   while True:
     # recebe um quadro
+    log('Aguardando quadro...')
     tamanho, quadro = conexao_receber(conexao)
-      
+
     # se não recebeu nada então a conexão
     # foi desligada pelo outro enlace
     # hora de dar tchau
     if quadro is None and tamanho == 0:
+      log('Soquete vazio. Desligando...')
       info['sair'] = True
       return None
-    
+
     # Deu timeout
     if quadro is None and tamanho == 1:
+      log('Timeout.')
       info['timeout'] = True 
       return None
-    
+
+    log('Quadro recebido.')
     # checksum
     # se estiver errado entao ignora
     if not quadro_checar(quadro):
+      log('Chcksum inválido. Quadro ignorado.')
       return None
-      
+
     # checa resposta
     # se for um quadro de resposta (ACK)
     # o retorna diretamente
     if quadro_eresposta(quadro):
+      log('É um quadro de resposta.')
       return quadro
-    
+
     # não é resposta...entao continua
     checksum = quadro_obterchecksum(quadro)
-    
+    log('É um quadro de dados.')
+
     # checa id
     # se for o mesmo quadro recebido
     # anteriormente então ignora quadro
@@ -271,11 +286,13 @@ def conexao_obterquadro(conexao, info):
       # o proximo
       mesmoquadro = (checksum == info['rec_checksum'])
       if mesmoquadro:
+        log('Quadro repetido. Ignorando e reenviado ACK...')
         conexao_confirmar(conexao, bytearray([id]))
       continue
-    
+
     # quadro foi aceito então avisa o
     # no enviando uma confirmacao
+    log('É um quadro de dados. Enviando confirmação')
     conexao_confirmar(conexao, bytearray([id]))
       
     # quadro novo no pedaço...retorna-o
@@ -300,18 +317,23 @@ def conexaopassiva_conectar(tcp, param):
 
 # Recebe, processa e envia dados pela conexao  
 def conexao_manipular(conexao, fila, parametros):
-  info = {'envia_id': 0, 'rec_id' : 1, 'rec_tamanho': 0, 'rec_checksum': bytearray(), 'timeout': False, 'sair': False}
+  info = {'aguarda_resposta': False, 'envia_id': 0, 'rec_id' : 1, 'rec_tamanho': 0, 'rec_checksum': bytearray(), 'timeout': False, 'sair': False}
   
   while True:
-    # se nao estive esperando resposta
+    # se nao estiver esperando resposta
     # enquanto tiver quadros na
     # fila para enviar...envia
+    log('SEÇÃO DE ENVIO') 
+    log('Tamanho da fila: {0}'.format(len(fila)))
+    log('Aguarda resposta: {0}'.format(info['aguarda_resposta']))
     if len(fila) > 0:
-      quadro_aenviar = fila.pop(0)
-      conexao_enviarquadro(conexao, quadro_aenviar, info)
+      if not info['aguarda_resposta']:
+        quadro_aenviar = fila.pop(0)
+        conexao_enviarquadro(conexao, quadro_aenviar, info)
 
     # Recebe um quadro
     while True:
+      log('SEÇÃO DE RECEBIMENTO')
       quadro_recebido = conexao_obterquadro(conexao, info)
     
       # Não recebeu nada então
@@ -322,13 +344,15 @@ def conexao_manipular(conexao, fila, parametros):
        
       # Deu timeout então
       # reenvia e espera o proximo
-      if info['timeout']:
+      if info['timeout'] and info['aguarda_resposta']:
+        log('Último quadro será reenviado.')
         conexao_enviarquadro(conexao, quadro_aenviar, info)
         continue
       
       # Quadro foi ignorado então
       # envia o proximo da fila
       if quadro_recebido == None:
+        log('Próximo da fila.')
         break
     
       # Checa se o quadro recebido é a resposta
@@ -339,6 +363,7 @@ def conexao_manipular(conexao, fila, parametros):
         # Se não estava esperando por resposta
         # envia o proximo da fila
         if not info['aguarda_resposta']:
+          log('Resposta não era esperada. Próximo da fila.')
           break
         
         # Se estava esperando por resposta
@@ -346,12 +371,15 @@ def conexao_manipular(conexao, fila, parametros):
         if id == info['envia_id']:
           # Resposta confirmada entao
           # envia o proximo da fila
+          
+          log('Resposta confirmada. Próximo da fila.')
           info['aguarda_resposta'] = False
           break
         else:
           # Nao era a resposta esperada
           # entao reenvia o ultimo quadro
           # e espera o proximo quadro
+          log('Resposta não confirmada. Reenviando...')
           conexao_enviarquadro(conexao, quadro_aenviar, info)
           continue
         
@@ -363,6 +391,7 @@ def conexao_manipular(conexao, fila, parametros):
       dados_processar(dados_recebidos, parametros)
       
       # envia o proximo da fila
+      log('Dados salvos. Próximo da fila.')
       break
 
 # Gera os IDs disponíveis para identificar
@@ -410,15 +439,22 @@ def tcp_encerrar(tcp):
 if len(sys.argv) > 4:  
   args_processar(parametros)
   dados = dados_obter(parametros['entrada'])
+  saida = open(parametros['saida'], 'w+b')
+  parametros['saida'] = saida
   pedacos = dados_partir(dados, TAMANHO_SECAODADOS)
   for pedaco in pedacos:
     pedaco = dados_rechear(pedaco, BYTES_FLAGS, BYTE_ESCAPE)
   fila = filaquadros_gerar(pedacos)
   tcp = tcp_obter()
   if parametros['modoservidor']:
+    log('Aguardando conexão passivamente...')
     conexao, parametros['cliente'] = conexaopassiva_conectar(tcp, parametros)
+    log('Conectado..')
   else:
+    log('Conectando...')
     conexaoativa_conectar(tcp, parametros)
     conexao = tcp
+    log('Conectado.')
   conexao_manipular(conexao, fila, parametros)
+  saida.close()
   tcp_encerrar(tcp)
