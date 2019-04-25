@@ -1,1 +1,1 @@
-python3.6 src/dccnet.py -s 8081 entrada saida
+python3.6 src/dccnet.py -s 8081 tools/tests/alice.txt saida_servidor

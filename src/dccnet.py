@@ -10,7 +10,7 @@ import sys
 
 # CONSTANTES DO PROGRAMA
 # ======================
-TAMANHO_QUADRO = 512
+TAMANHO_SECAODADOS = 512
 TAMANHO_JANELA = 2
 BYTE_ESCAPE    = bytearray([27])  # 1b
 BYTE_INICIO    = bytearray([204]) # cc
@@ -18,10 +18,11 @@ BYTE_FINAL     = bytearray([205]) # cd
 BYTE_CONFIRMA  = bytearray([128]) # 80
 BYTE_RECEBE    = bytearray([127]) # 7f
 
+BYTES_FLAGS = [BYTE_FINAL]
+
 # VARIÁVEIS DO PROGRAMA
 # =====================
 parametros = {'ip' : '', 'modoservidor': False, 'porta': 0, 'cliente': '', 'entrada': '', 'saida': ''}
-lista_quadros = []
 
 # FUNCOES DO PROGRAMA
 # ===================
@@ -41,6 +42,28 @@ def args_processar(parametros):
     parametros['porta'] = int(temp[1])
   parametros['entrada'] = sys.argv[3]
   parametros['saida'] = sys.argv[4]
+
+# Codifica uma sequencia de bytes em base16
+def base16_codificar(bytes):
+  return base64.b16encode(bytes)
+
+# Decodifica uma sequencia de bytes na base16
+def base16_decodificar(bytes):
+  return base64.b16decode(bytes)
+
+def byte_einicio(bytescodificados):
+  ba = bytearray()
+  ba.extend(base16_decodificar(bytescodificados))
+    
+  return (ba == BYTE_INICIO)
+
+def byte_efinal(bytescodificados):
+  ba = bytearray()
+  ba.extend(base16_decodificar(bytescodificados[-4:]))
+  efinal = (ba[1] == BYTE_FINAL[0])
+  naoescape = not ba[0] == BYTE_ESCAPE[0]
+
+  return (efinal and naoescape)
 
 # Checa a integridade dos dadosGera os bytes para checksum de 16 bits
 def chcksum_checar(valor):
@@ -67,22 +90,204 @@ def chcksum_gerar(valor):
   
   return (bytearray([byte1, byte2]))
 
+# Abre um arquivo para leitura e o
+# carrega na memória
+def dados_obter(nomearquivo):
+  arquivo = open(nomearquivo, "rb")
+  dados = bytearray(arquivo.read())
+
+  return dados
+  
+def dados_salvar(dados, nomearquivo):
+  arquivo = open(nomearquivo, "w+b")
+  arquivo.write(dados)
+  arquivo.close()
+
+# Particionar dados em pedaços
+def dados_partir(dados, tamanho):
+  return [dados[i:i+tamanho] for i in range(0, len(dados), tamanho)]
+
+def dados_desrechear(dados, bytesflag, byteescape):
+  x = dados.replace(byteescape * 2, byteescape)
+  for byteflag in bytesflag:
+    y = x.replace(byteescape + byteflag, byteflag)
+  
+  return y
+
+def dados_processar(dados, parametros):
+  # Remove o recheio
+  dados = dados_desrechear(dados, BYTES_FLAGS, BYTE_ESCAPE)
+  
+  # Salva os dados no arquivo de saida
+  dados_salvar(dados, parametros['saida'])
+
+# Adiciona DLE antes dos bytes de escape e de flags
+def dados_rechear(dados, bytesflag, byteescape):
+  x = dados.replace(byteescape, byteescape * 2)
+  for byteflag in bytesflag:
+    y = x.replace(byteflag, byteescape + byteflag)
+  
+  return y
+
+# Checa a integridade do quado
+def quadro_checar(quadro):
+  return chcksum_checar(quadro)
+
+# Codifica um quadro e base16
+def quadro_codificar(quadro):
+  return base64.b16encode(quadro)
+
+def quadro_eresposta(quadro):
+  return (bytearray([quadro[2]]) == BYTE_CONFIRMA)
+ 
+# Gera um quadro conforme especificação do TP
+def quadro_gerar(dados, quadroid, resposta):
+  espacovazio = bytearray([0,0])
+  quadro = bytearray()
+
+  quadro.extend(BYTE_INICIO)     # sentinela Inicio do Quadro
+  quadro.extend(quadroid)        # ID do quadro
+  if resposta: 
+    quadro.extend(BYTE_RECEBE)   # Flag de recepcao
+  else:
+    quadro.extend(BYTE_CONFIRMA) # Flag de confirmação
+  quadro.extend(espacovazio)     # Espaço reservado para o checksum
+  if not resposta:
+    quadro.extend(dados)         # Dados do quadro
+  quadro.extend(BYTE_FINAL)      # sentinela Fim do Quadro
+  
+  # calcula o checksum
+  checksum = chcksum_gerar(quadro)
+  quadro[3] = checksum[0]
+  quadro[4] = checksum[1]
+  
+  return quadro
+
+def quadro_obterchecksum(quadro):
+  return bytearray([quadro[3], quadro[4]])
+
+def quadro_obterdados(quadro, tamanho):
+  return (quadro[5:tamanho-1])
+
+def quadro_obterid(quadro):
+  return int(quadro[1])
+
+# Gera um quadro de confirmação
+def quadro_resposta(quadroid):
+  return quadro_gerar(None, quadroid, True)
+
+def conexao_enviar(tcp, quadro):
+  dados = base16_codificar(quadro)
+  tcp.sendall(dados)
+  
+def conexao_receber(tcp):
+  while True:
+    # recebe dois bytes
+    dados = bytearray()
+    tamanho = 1
+    try:
+      tcp.settimeout(1)
+      dados.extend(tcp.recv(2))
+    except socket.timeout:
+      # demorou mais de um segundo
+      return 1, None
+  
+    # se não recebeu nada então a conexão
+    # do outro enlace foi desligada
+    # não retorna nada
+    if not dados:
+      return 0, None
+    if len(dados) == 0:
+      return 0, None
+  
+    # checa pelo sentinela InicioDoQuadro
+    if byte_einicio(dados):
+      # é o inicio do quadro, então o recebe
+      while True:
+        try:
+          tcp.settimeout(1)
+          dados.extend(tcp.recv(2))
+        except socket.timeout:
+          # demorou mais de um segundo
+          return 1, None
+        tamanho = tamanho + 1
+        # recebe até o seu final e o retorna
+        if byte_efinal(dados):
+          return tamanho, base16_decodificar(dados)
+    # se não é o início de um quadro, então
+    # continua esperando pelo sentinela
+
+def conexao_confirmar(conexao, id):
+  confirmacao = quadro_resposta(id)
+  conexao_enviar(conexao, confirmacao)
+
+
+def conexao_enviarquadro(conexao, quadro, info):
+  conexao_enviar(conexao, quadro)
+  info['envia_id'] = quadro_obterid(quadro)
+  info['aguarda_resposta'] = True
+  info['timeout'] = False
+
+def conexao_obterquadro(conexao, info):
+  while True:
+    # recebe um quadro
+    tamanho, quadro = conexao_receber(conexao)
+      
+    # se não recebeu nada então a conexão
+    # foi desligada pelo outro enlace
+    # hora de dar tchau
+    if quadro is None and tamanho == 0:
+      info['sair'] = True
+      return None
+    
+    # Deu timeout
+    if quadro is None and tamanho == 1:
+      info['timeout'] = True 
+      return None
+    
+    # checksum
+    # se estiver errado entao ignora
+    if not quadro_checar(quadro):
+      return None
+      
+    # checa resposta
+    # se for um quadro de resposta (ACK)
+    # o retorna diretamente
+    if quadro_eresposta(quadro):
+      return quadro
+    
+    # não é resposta...entao continua
+    checksum = quadro_obterchecksum(quadro)
+    
+    # checa id
+    # se for o mesmo quadro recebido
+    # anteriormente então ignora quadro
+    # mas reenvia a confirmação
+    id = quadro_obterid(quadro)
+    if info['rec_id'] == id:
+      # Se os checksums forem iguais entao
+      # é o mesmo quadro ja recebido anterioremente
+      # assim reenvia a confirmacao e espera
+      # o proximo
+      mesmoquadro = (checksum == info['rec_checksum'])
+      if mesmoquadro:
+        conexao_confirmar(conexao, bytearray([id]))
+      continue
+    
+    # quadro foi aceito então avisa o
+    # no enviando uma confirmacao
+    conexao_confirmar(conexao, bytearray([id]))
+      
+    # quadro novo no pedaço...retorna-o
+    info['rec_checksum'] = checksum
+    info['rec_tamanho'] = tamanho
+    info['rec_id'] = id
+
+    return quadro
+
 # Efetua uma conexão ativa para IP informado
 def conexaoativa_conectar(conexao, param):
   conexao.connect((param['ip'], param['porta']))
-
-def conexaoativa_manipular(tcp):
-  tcp.send(bytearray([0,1,2,3,4]))
-  try:
-    while True:
-      r = tcp.recv(1)
-      if not r:
-        break
-      if len(r) == 0:
-        break
-      print(r)
-  except:
-    exit()
 
 # Espera passivamente por uma conexão
 def conexaopassiva_conectar(tcp, param):
@@ -94,57 +299,71 @@ def conexaopassiva_conectar(tcp, param):
   return tcp.accept()
 
 # Recebe, processa e envia dados pela conexao  
-def conexaopassiva_manipular(conexao):
-  try:
+def conexao_manipular(conexao, fila, parametros):
+  info = {'envia_id': 0, 'rec_id' : 1, 'rec_tamanho': 0, 'rec_checksum': bytearray(), 'timeout': False, 'sair': False}
+  
+  while True:
+    # se nao estive esperando resposta
+    # enquanto tiver quadros na
+    # fila para enviar...envia
+    if len(fila) > 0:
+      quadro_aenviar = fila.pop(0)
+      conexao_enviarquadro(conexao, quadro_aenviar, info)
+
+    # Recebe um quadro
     while True:
-      r = conexao.recv(1)
-      s = bytearray(1)
-      s[0] = r[0] + 1
-      conexao.send(s)
-  except:
-    exit()
+      quadro_recebido = conexao_obterquadro(conexao, info)
+    
+      # Não recebeu nada então
+      # conexão foi desligada e
+      # pode sair do programa
+      if info['sair']:
+        exit()
+       
+      # Deu timeout então
+      # reenvia e espera o proximo
+      if info['timeout']:
+        conexao_enviarquadro(conexao, quadro_aenviar, info)
+        continue
+      
+      # Quadro foi ignorado então
+      # envia o proximo da fila
+      if quadro_recebido == None:
+        break
+    
+      # Checa se o quadro recebido é a resposta
+      # esperada. 
+      # se sim pode enviar o proximo da fila
+      # se não reenvia o quadro e espera o proximo
+      if quadro_eresposta(quadro_recebido):
+        # Se não estava esperando por resposta
+        # envia o proximo da fila
+        if not info['aguarda_resposta']:
+          break
+        
+        # Se estava esperando por resposta
+        id = quadro_obterid(quadro_recebido)
+        if id == info['envia_id']:
+          # Resposta confirmada entao
+          # envia o proximo da fila
+          info['aguarda_resposta'] = False
+          break
+        else:
+          # Nao era a resposta esperada
+          # entao reenvia o ultimo quadro
+          # e espera o proximo quadro
+          conexao_enviarquadro(conexao, quadro_aenviar, info)
+          continue
+        
+      # Se é quadro de dados então
+      # extrai os dados do quadro
+      dados_recebidos = quadro_obterdados(quadro_recebido, info['rec_tamanho'])
 
-# Abre um arquivo para leitura e o
-# carrega na memória
-def dados_obter(nomearquivo):
-  arquivo = open(nomearquivo, "rb")
-  dados = bytearray(arquivo.read())
-
-  return dados
-
-# Particionar dados em pedaços
-def dados_partir(dados, tamanho):
-  return [dados[i:i+tamanho] for i in range(0, len(dados), tamanho)]
-
-# Adiciona DLE antes dos bytes de escape e de flags
-def dados_rechear(dados, bytesflag, byteescape):
-  x = dados.replace(byteescape, byteescape * 2)
-  for byteflag in bytesflag:
-    y = x.replace(byteflag, byteescape + byteflag)
-  
-  return y
-
-# Codifica um quadro e base16
-def quadro_codificar(quadro):
-  return base64.b16encode(quadro)
-  
-# Gera um quadro conforme especificação do TP
-def quadro_gerar(dados, quadroid):
-  espacovazio = bytearray([0,0])
-
-  quadro = BYTE_INICIO       # sentinela Inicio do Quadro
-  quadro.extend(quadroid)    # ID do quadro
-  quadro.extend(BYTE_RECEBE) # Flag de recepcao
-  quadro.extend(espacovazio) # Espaço reservado para o checksum
-  quadro.extend(dados)       # Dados do quadro
-  quadro.extend(BYTE_FINAL)  # sentinela Fim do Quadro
-  
-  # calcula o checksum
-  checksum = chcksum_gerar(quadro)
-  quadro[3] = checksum[0]
-  quadro[4] = checksum[1]
-  
-  return quadro
+      # processa os dados recebidos
+      dados_processar(dados_recebidos, parametros)
+      
+      # envia o proximo da fila
+      break
 
 # Gera os IDs disponíveis para identificar
 # os quadros da fila
@@ -154,16 +373,21 @@ def filaquadros_gerarids(quantidade):
     lista.append(bytearray([i]))
     
   return lista
-    
+
 # Gera a fila de quadros para transmitir
 def filaquadros_gerar(lista):
   i = 0
   ids = filaquadros_gerarids(TAMANHO_JANELA)
   quadros = []
   for item in lista:
-    quadros.append(quadro_gerar(item, ids[i % TAMANHO_JANELA]))
+    quadros.append(quadro_gerar(item, ids[i % TAMANHO_JANELA], False))
     i = i + 1
   return quadros
+  
+def filaquadros_proximo(fila):
+  quadro = fila.pop()
+  
+  return base16.codificar(quadro)
 
 # Configura uma conexão via TCP/IP
 def tcp_obter():
@@ -186,15 +410,15 @@ def tcp_encerrar(tcp):
 if len(sys.argv) > 4:  
   args_processar(parametros)
   dados = dados_obter(parametros['entrada'])
-  dadosrecheados = dados_rechear(dados, [BYTE_FINAL], BYTE_ESCAPE)
-  pedacos = dados_partir(dadosrecheados, TAMANHO_QUADRO)
+  pedacos = dados_partir(dados, TAMANHO_SECAODADOS)
+  for pedaco in pedacos:
+    pedaco = dados_rechear(pedaco, BYTES_FLAGS, BYTE_ESCAPE)
   fila = filaquadros_gerar(pedacos)
   tcp = tcp_obter()
-  
   if parametros['modoservidor']:
     conexao, parametros['cliente'] = conexaopassiva_conectar(tcp, parametros)
-    conexaopassiva_manipular(conexao)
   else:
     conexaoativa_conectar(tcp, parametros)
-    conexaoativa_manipular(tcp)
+    conexao = tcp
+  conexao_manipular(conexao, fila, parametros)
   tcp_encerrar(tcp)
