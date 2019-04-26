@@ -16,7 +16,7 @@ BYTE_ESCAPE        = bytearray([27])  # 1b
 BYTE_INICIO        = bytearray([204]) # cc
 BYTE_FINAL         = bytearray([205]) # cd
 BYTE_CONFIRMA      = bytearray([128]) # 80
-BYTE_RECEBE        = bytearray([127]) # 7f
+BYTE_DADOS         = bytearray([127]) # 7f
 BYTES_FLAGS        = [BYTE_FINAL]
 EXIBIR_LOG         = True
 
@@ -69,7 +69,8 @@ def byte_efinal(bytescodificados):
 
   return (efinal and naoescape)
 
-# Checa a integridade dos dadosGera os bytes para checksum de 16 bits
+# Checa a integridade dos dados
+# Gera os bytes para checksum de 16 bits
 def chcksum_checar(valor):
   soma = 0
   for x in valor:
@@ -133,6 +134,7 @@ def dados_rechear(dados, bytesflag, byteescape):
 
 # Checa a integridade do quado
 def quadro_checar(quadro):
+  #print(quadro)
   return chcksum_checar(quadro)
 
 # Codifica um quadro e base16
@@ -150,9 +152,9 @@ def quadro_gerar(dados, quadroid, resposta):
   quadro.extend(BYTE_INICIO)     # sentinela Inicio do Quadro
   quadro.extend(quadroid)        # ID do quadro
   if resposta: 
-    quadro.extend(BYTE_RECEBE)   # Flag de recepcao
+    quadro.extend(BYTE_CONFIRMA) # Flag de recepcao
   else:
-    quadro.extend(BYTE_CONFIRMA) # Flag de confirmação
+    quadro.extend(BYTE_DADOS)    # Flag de confirmação
   quadro.extend(espacovazio)     # Espaço reservado para o checksum
   if not resposta:
     quadro.extend(dados)         # Dados do quadro
@@ -256,7 +258,7 @@ def conexao_obterquadro(conexao, info):
       info['timeout'] = True 
       return None
 
-    log('Quadro recebido.')
+    log('Quadro recebido. ID: {0}.'.format(quadro_obterid(quadro)))
     # checksum
     # se estiver errado entao ignora
     if not quadro_checar(quadro):
@@ -326,10 +328,9 @@ def conexao_manipular(conexao, fila, parametros):
     log('SEÇÃO DE ENVIO') 
     log('Tamanho da fila: {0}'.format(len(fila)))
     log('Aguarda resposta: {0}'.format(info['aguarda_resposta']))
-    if len(fila) > 0:
-      if not info['aguarda_resposta']:
-        quadro_aenviar = fila.pop(0)
-        conexao_enviarquadro(conexao, quadro_aenviar, info)
+    if not info['aguarda_resposta'] and len(fila) > 0:
+      quadro_aenviar = fila.pop(0)
+      conexao_enviarquadro(conexao, quadro_aenviar, info)
 
     # Recebe um quadro
     while True:
