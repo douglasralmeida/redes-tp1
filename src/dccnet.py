@@ -53,7 +53,7 @@ def base16_codificar(bytes):
 
 # Decodifica uma sequencia de bytes na base16
 def base16_decodificar(bytes):
-  return base64.b16decode(bytes)
+  return base64.b16decode(bytes, True)
 
 def byte_einicio(bytescodificados):
   ba = bytearray()
@@ -61,13 +61,26 @@ def byte_einicio(bytescodificados):
     
   return (ba == BYTE_INICIO)
 
+# QQ + CD                     s
+# QQ + 1B + CD                n
+# QQ + 1B + 1B + CD           s
+# QQ + 1B + 1B + 1B + CD      n
+# QQ + 1B + 1B + 1B + 1B + CD s
 def byte_efinal(bytescodificados):
+  resultado = True
   ba = bytearray()
-  ba.extend(base16_decodificar(bytescodificados[-4:]))
-  efinal = (ba[1] == BYTE_FINAL[0])
-  naoescape = not ba[0] == BYTE_ESCAPE[0]
-
-  return (efinal and naoescape)
+  ba.extend(base16_decodificar(bytescodificados))
+  
+  ehfinal = (ba[-1] == BYTE_FINAL[0])
+  if not ehfinal:
+    return False
+  
+  x = -2
+  while (ba[x] == BYTE_ESCAPE[0]):
+    resultado = not resultado
+    x = x - 1
+   
+  return resultado
 
 # Checa a integridade dos dados
 # Gera os bytes para checksum de 16 bits
@@ -75,10 +88,9 @@ def chcksum_checar(valor):
   soma = 0
   for x in valor:
     soma = soma + x
-  for x in range(0, 1):
-    vaium = math.floor(soma / 0x100)
-    soma = soma % 0x100 + vaium
-    
+    if math.floor(soma / 0x100) > 0:
+      soma = soma % 0x100 + 1
+
   return (soma == 0xFF)
 
 # Gera os bytes para checksum de 16 bits
@@ -86,9 +98,8 @@ def chcksum_gerar(valor):
   soma = 0
   for x in valor:
     soma = soma + x
-  for x in range(0, 1):
-    vaium = math.floor(soma / 0x10000)
-    soma = soma % 0x10000 + vaium
+    if math.floor(soma / 0x10000) > 0:
+      soma = soma % 0x10000 + 1
   complemento = ~soma & 0xFFFF
   byte1 = math.floor(complemento / 0x100)
   byte2 = complemento % 0x100
@@ -134,12 +145,11 @@ def dados_rechear(dados, bytesflag, byteescape):
 
 # Checa a integridade do quado
 def quadro_checar(quadro):
-  #print(quadro)
   return chcksum_checar(quadro)
 
 # Codifica um quadro e base16
 def quadro_codificar(quadro):
-  return base64.b16encode(quadro)
+  return base16_codificar(quadro)
 
 def quadro_eresposta(quadro):
   return (bytearray([quadro[2]]) == BYTE_CONFIRMA)
@@ -182,61 +192,96 @@ def quadro_resposta(quadroid):
 
 def conexao_enviar(tcp, quadro):
   dados = base16_codificar(quadro)
-  tcp.sendall(dados)
-  
+  try:
+    tcp.sendall(dados)
+  except:
+    sys.exit()
+
+def receber(conexao, quantidade):
+  bytes = b''
+  try:
+    conexao.settimeout(1.0)
+    bytes = bytes + conexao.recv(quantidade)
+  except socket.timeout:
+    # demorou mais de um segundo
+    conexao.settimeout(None)
+    return None
+  except:
+    sys.exit()
+  conexao.settimeout(None)
+    
+  return bytes
+
 def conexao_receber(conexao):
   while True:
     # recebe dois bytes
     dados = bytearray()
     tamanho = 1
-    try:
-      conexao.settimeout(1.0)
-      dados.extend(conexao.recv(2))
-    except socket.timeout:
-      # demorou mais de um segundo
-      conexao.settimeout(None)
+    bytes_recebidos = receber(conexao, 2)
+
+    # demorou mais de um segundo
+    if not bytes_recebidos:
       return 1, None
-    conexao.settimeout(None)
-  
+
     # se não recebeu nada então a conexão
     # do outro enlace foi desligada
     # não retorna nada
-    if not dados:
+    if len(bytes_recebidos) == 0:  
       return 0, None
-    if len(dados) == 0:
-      return 0, None
+    dados.extend(bytes_recebidos)
   
     # checa pelo sentinela InicioDoQuadro
+    # se é o inicio do quadro, então o recebe
     if byte_einicio(dados):
-      # é o inicio do quadro, então o recebe
+      # recebe o cabecalho
+      bytes_recebidos = receber(conexao, 8)
+      tamanho = tamanho + 4
+      # demorou mais de um segundo
+      if not bytes_recebidos:
+        return 1, None
+      
+      # se não recebeu nada então a conexão
+      # do outro enlace foi desligada
+      # não retorna nada
+      if len(bytes_recebidos) == 0:
+        return 0, None
+      dados.extend(bytes_recebidos)
+
+      # recebe o restantes até FimDoQuadro
       while True:
-        try:
-          conexao.settimeout(1.0)
-          dados.extend(conexao.recv(2))
-        except socket.timeout:
-          # demorou mais de um segundo
-          conexao.settimeout(None)
+        bytes_recebidos = receber(conexao, 2)
+        
+        # demorou mais de um segundo
+        if not bytes_recebidos:
           return 1, None
-        conexao.settimeout(None)
+      
+        # se não recebeu nada então a conexão
+        # do outro enlace foi desligada
+        # não retorna nada
+        if len(bytes_recebidos) == 0:
+          return 0, None
+        
+        dados.extend(bytes_recebidos)
         tamanho = tamanho + 1
-        # recebe até o seu final e o retorna
+
+        # quando chegar o final, retorna o quadro
         if byte_efinal(dados):
           return tamanho, base16_decodificar(dados)
-    # se não é o início de um quadro, então
-    # continua esperando pelo sentinela
+      # se não é o início de um quadro, então
+      # continua esperando pelo sentinela
 
 def conexao_confirmar(conexao, id):
   confirmacao = quadro_resposta(id)
   conexao_enviar(conexao, confirmacao)
 
-
 def conexao_enviarquadro(conexao, quadro, info):
-  log('Enviando quadro...')
+  temp = quadro_obterchecksum(quadro)
+  x = quadro_obterid(quadro)
+  log('Enviando quadro ID {0} Checksum ({1} {2})...'.format(x, temp[0], temp[1]))
   conexao_enviar(conexao, quadro)
   log('Enviado.')
   info['envia_id'] = quadro_obterid(quadro)
   info['aguarda_resposta'] = True
-  info['timeout'] = False
 
 def conexao_obterquadro(conexao, info):
   while True:
@@ -257,12 +302,14 @@ def conexao_obterquadro(conexao, info):
       log('Timeout.')
       info['timeout'] = True 
       return None
-
-    log('Quadro recebido. ID: {0}.'.format(quadro_obterid(quadro)))
+    
     # checksum
     # se estiver errado entao ignora
+    temp = quadro_obterchecksum(quadro)
+    log('Quadro recebido. ID: {0} Checksum ({1} {2}).'.format(quadro_obterid(quadro), temp[0], temp[1]))
     if not quadro_checar(quadro):
-      log('Chcksum inválido. Quadro ignorado.')
+      log('Chcksum ({0} {1}) inválido. Quadro ignorado.'.format(temp[0], temp[1]))
+      log(quadro)
       return None
 
     # checa resposta
@@ -288,7 +335,7 @@ def conexao_obterquadro(conexao, info):
       # o proximo
       mesmoquadro = (checksum == info['rec_checksum'])
       if mesmoquadro:
-        log('Quadro repetido. Ignorando e reenviado ACK...')
+        log('Quadro repetido. Ignorando e reenviando ACK...')
         conexao_confirmar(conexao, bytearray([id]))
       continue
 
@@ -347,6 +394,7 @@ def conexao_manipular(conexao, fila, parametros):
       # reenvia e espera o proximo
       if info['timeout'] and info['aguarda_resposta']:
         log('Último quadro será reenviado.')
+        log(quadro_aenviar)
         conexao_enviarquadro(conexao, quadro_aenviar, info)
         continue
       
@@ -375,12 +423,14 @@ def conexao_manipular(conexao, fila, parametros):
           
           log('Resposta confirmada. Próximo da fila.')
           info['aguarda_resposta'] = False
+          info['timeout'] = False
           break
         else:
           # Nao era a resposta esperada
           # entao reenvia o ultimo quadro
           # e espera o proximo quadro
           log('Resposta não confirmada. Reenviando...')
+          log(quadro_aenviar)
           conexao_enviarquadro(conexao, quadro_aenviar, info)
           continue
         
@@ -436,15 +486,17 @@ def tcp_encerrar(tcp):
   tcp.close()
 
 # CORPO DO PROGRAMA
-# =================  
-if len(sys.argv) > 4:  
+# =================
+if len(sys.argv) > 4:
   args_processar(parametros)
   dados = dados_obter(parametros['entrada'])
   saida = open(parametros['saida'], 'w+b')
   parametros['saida'] = saida
   pedacos = dados_partir(dados, TAMANHO_SECAODADOS)
   for pedaco in pedacos:
-    pedaco = dados_rechear(pedaco, BYTES_FLAGS, BYTE_ESCAPE)
+    pedaco_recheado = dados_rechear(pedaco, BYTES_FLAGS, BYTE_ESCAPE)
+    pedaco.clear()
+    pedaco.extend(pedaco_recheado)
   fila = filaquadros_gerar(pedacos)
   tcp = tcp_obter()
   if parametros['modoservidor']:
